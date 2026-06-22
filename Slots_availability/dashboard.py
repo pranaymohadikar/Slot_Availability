@@ -103,9 +103,11 @@ def build_data(xlsx):
     coaches = []
     for _, r in s.iterrows():
         total, blocked, booked = _i(r.get("Total Slots")), _i(r.get("Blocked")), _i(r.get("Booked (appointments)"))
-        coaches.append({"name": str(r["Coach"]).strip(), "total": total, "blocked": blocked,
+        coaches.append({"name": str(r["Coach"]).strip(), "role": str(r.get("Role","")).strip() or "Other",
+                        "total": total, "blocked": blocked,
                         "booked": booked, "avail": total - blocked, "open": total - blocked - booked,
                         "next_open": _fmt_dt(r.get("Next Open")), "last_open": _fmt_dt(r.get("Last Open"))})
+    role_by_coach = {c["name"]: c["role"] for c in coaches}
 
     open_slots = []
     try:
@@ -118,6 +120,7 @@ def build_data(xlsx):
                 if pd.notna(r[c]):
                     rec = _parse_slot(r[c], coach, year)
                     if rec:
+                        rec["role"] = role_by_coach.get(coach, "Other")
                         open_slots.append(rec)
     except Exception:
         pass
@@ -130,7 +133,8 @@ def build_data_from_engine(g, open7, window="", statuses="", n0=None, n1=None):
     coaches = []
     for _, r in g.iterrows():
         total, blocked, booked = int(r["total"]), int(r["blocked"]), int(r["booked"])
-        coaches.append({"name": str(r["name"]).strip(), "total": total, "blocked": blocked,
+        coaches.append({"name": str(r["name"]).strip(), "role": str(r.get("role","")).strip() or "Other",
+                        "total": total, "blocked": blocked,
                         "booked": booked, "avail": total - blocked, "open": total - blocked - booked,
                         "next_open": _fmt_dt(r.get("next_open")), "last_open": _fmt_dt(r.get("last_open"))})
     open_slots = []
@@ -140,7 +144,8 @@ def build_data_from_engine(g, open7, window="", statuses="", n0=None, n1=None):
         for _, r in op.iterrows():
             open_slots.append({"coach": str(r["name"]).strip(), "date": r["date"].strftime("%Y-%m-%d"),
                                "day": r["date"].strftime("%a"), "start": r["start"], "end": r["end"],
-                               "reserved": bool(r.get("reserved", False))})
+                               "reserved": bool(r.get("reserved", False)),
+                               "role": str(r.get("role","")).strip() or "Other"})
     return _assemble(coaches, open_slots, window, statuses, n0, n1)
 
 
@@ -236,6 +241,7 @@ TEMPLATE = r"""<!DOCTYPE html>
     <h2>Open slots — next 7 days</h2>
     <div class="h2sub" id="rangelabel"></div>
     <div class="filters">
+      <select id="fRole"><option value="">All roles</option></select>
       <select id="fCoach"><option value="">All coaches</option></select>
       <select id="fDay"><option value="">All days</option></select>
       <input type="text" id="fSearch" placeholder="Search coach or time…" aria-label="Search open slots"/>
@@ -251,7 +257,7 @@ TEMPLATE = r"""<!DOCTYPE html>
     <div class="eyebrow">Demand at a glance</div>
     <h2>Open slots by day</h2>
     <div class="h2sub">Next 7 days</div>
-    <canvas id="byDay" height="92"></canvas>
+    <canvas id="byDay" height="96"></canvas>
   </section>
 
   <section class="card">
@@ -273,12 +279,15 @@ const LIVE = __LIVE__;
 let charts = {};
 const fmtD   = d => new Date(d+'T00:00').toLocaleDateString(undefined,{day:'2-digit',month:'short'});
 const fmtDow = d => new Date(d+'T00:00').toLocaleDateString(undefined,{weekday:'short',day:'2-digit',month:'short'});
-const barLabels = {                       // draw the count above each bar
+const barLabels = {                       // draw the count above each individual bar
   id:'barLabels',
   afterDatasetsDraw(chart){
     const ctx=chart.ctx; ctx.save();
-    ctx.font='600 12px ui-sans-serif,-apple-system,Segoe UI,sans-serif'; ctx.fillStyle='#152230'; ctx.textAlign='center';
-    chart.getDatasetMeta(0).data.forEach((bar,i)=>{ const v=chart.data.datasets[0].data[i]; if(v!=null&&v!=='') ctx.fillText(v, bar.x, bar.y-6); });
+    ctx.font='600 11px ui-sans-serif,-apple-system,Segoe UI,sans-serif'; ctx.fillStyle='#152230'; ctx.textAlign='center';
+    chart.data.datasets.forEach((ds,di)=>{
+      const meta=chart.getDatasetMeta(di); if(meta.hidden) return;
+      meta.data.forEach((bar,i)=>{ const v=+ds.data[i]||0; if(v>0) ctx.fillText(v, bar.x, bar.y-5); });
+    });
     ctx.restore();
   }
 };
@@ -301,31 +310,49 @@ function renderAll(DATA){
 
 function buildFinder(DATA){
   const slots = DATA.open_slots;
-  const fCoach=document.getElementById('fCoach'), fDay=document.getElementById('fDay'), fSearch=document.getElementById('fSearch');
-  fCoach.length=1; fDay.length=1;                       // keep the "All …" option, drop the rest
-  [...new Set(slots.map(s=>s.coach))].sort().forEach(c=>fCoach.add(new Option(c,c)));
+  const ROLES=['Nutritionist','Physiotherapist','Psychologist','Other'];
+  const fRole=document.getElementById('fRole'), fCoach=document.getElementById('fCoach'),
+        fDay=document.getElementById('fDay'), fSearch=document.getElementById('fSearch');
+  fRole.length=1; fDay.length=1;                        // keep the "All …" option, drop the rest
+  ROLES.filter(r=>slots.some(s=>(s.role||'Other')===r)).forEach(r=>fRole.add(new Option(r,r)));
   [...new Set(slots.map(s=>s.date))].sort().forEach(d=>fDay.add(new Option(fmtDow(d),d)));
+  function fillCoaches(role){                            // coach list follows the selected role
+    fCoach.length=1;
+    [...new Set(slots.filter(s=>!role||(s.role||'Other')===role).map(s=>s.coach))].sort()
+      .forEach(c=>fCoach.add(new Option(c,c)));
+  }
+  fillCoaches('');
   function apply(){
-    const c=fCoach.value, d=fDay.value, q=fSearch.value.trim().toLowerCase();
-    const rows = slots.filter(s => (!c||s.coach===c) && (!d||s.date===d) &&
+    const r=fRole.value, c=fCoach.value, d=fDay.value, q=fSearch.value.trim().toLowerCase();
+    const rows = slots.filter(s => (!r||(s.role||'Other')===r) && (!c||s.coach===c) && (!d||s.date===d) &&
       (!q||(s.coach+' '+s.start+' '+s.end).toLowerCase().includes(q)));
     document.getElementById('rows').innerHTML = rows.length
       ? rows.map(s=>`<tr><td class="coach">${s.coach}</td><td>${fmtD(s.date)}</td><td>${s.day}</td><td class="time">${s.start}–${s.end}${s.reserved?' <span class="badge">Reserved</span>':''}</td></tr>`).join('')
       : `<tr><td colspan="4" class="empty">No open slots match these filters.</td></tr>`;
     document.getElementById('count').textContent = `Showing ${rows.length} of ${slots.length} open slots`;
   }
+  fRole.onchange=()=>{ fillCoaches(fRole.value); fCoach.value=''; apply(); };
   fCoach.onchange=apply; fDay.onchange=apply; fSearch.oninput=apply; apply();
 }
 
 function drawCharts(DATA){
   Object.values(charts).forEach(c=>{ if(c) c.destroy(); }); charts={};
   if(window.Chart){ Chart.defaults.font.family='ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif'; Chart.defaults.color='#5d6b7a'; }
-  const slots=DATA.open_slots, byDay={}; slots.forEach(s=>byDay[s.date]=(byDay[s.date]||0)+1);
-  const dks=Object.keys(byDay).sort();
+  const ROLE_ORDER=['Nutritionist','Physiotherapist','Psychologist','Other'];
+  const ROLE_COLORS={Nutritionist:'#15a06e',Physiotherapist:'#2f6fed',Psychologist:'#8b5cf6',Other:'#9aa6b2'};
+  const slots=DATA.open_slots;
+  const dks=[...new Set(slots.map(s=>s.date))].sort();
+  const present=ROLE_ORDER.filter(role=>slots.some(s=>(s.role||'Other')===role));
+  const dsRole=present.map(role=>({
+    label:role,
+    data:dks.map(d=>slots.filter(s=>s.date===d && (s.role||'Other')===role).length),
+    backgroundColor:ROLE_COLORS[role], borderRadius:4, maxBarThickness:26}));   // grouped (no stack) -> bars sit side by side per day
   charts.byDay=new Chart(document.getElementById('byDay'),{type:'bar',
-    data:{labels:dks.map(fmtDow),datasets:[{data:dks.map(d=>byDay[d]),backgroundColor:'#15a06e',borderRadius:5,maxBarThickness:46}]},
+    data:{labels:dks.map(fmtDow),datasets:dsRole},
     plugins:[barLabels],
-    options:{layout:{padding:{top:18}},plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,grace:'10%',ticks:{precision:0},grid:{color:'#eef1f4'}},x:{grid:{display:false}}}}});
+    options:{layout:{padding:{top:18}},
+      plugins:{legend:{display:true,position:'bottom',labels:{boxWidth:10,boxHeight:10,usePointStyle:true,pointStyle:'circle',padding:14}}},
+      scales:{y:{beginAtZero:true,grace:'12%',ticks:{precision:0},grid:{color:'#eef1f4'}},x:{grid:{display:false}}}}});
   const cs=[...DATA.coaches].sort((a,b)=>b.open-a.open);
   charts.stack=new Chart(document.getElementById('stack'),{type:'bar',
     data:{labels:cs.map(c=>c.name),datasets:[
