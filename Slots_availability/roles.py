@@ -30,7 +30,7 @@ ROLE_BY_ID = {
     "d797816d-caac-11f0-9722-000d3a3e18d5": "Physiotherapist",      # Sakshi Vaidya
     "6b509d97-df23-11f0-9722-000d3a3e18d5": "Psychologist",      # Shobika KR
     "d945499c-5d80-11f0-bf53-000d3a3e18d5": "Psychologist",      # Shubha Dubey
-    "3e952ad2-69e1-11ef-b39a-000d3a3e18d5": "Psychologist",      # Sridurga R
+    "d1e01989-6000-11f1-80a1-000d3a3e18d5": "Psychologist",      # Sridurga R
     "9f952cc4-6dfa-11f0-bf53-000d3a3e18d5": "Nutritionist",      # Swetha Kshirsagar
     "83196674-0ee4-11f0-a17d-000d3a3e18d5": "Other",      # Tejaswini Rao Gudati
     "fa0d6f97-a81d-11f0-a0bb-000d3a3e18d5": "Nutritionist",      # Vandna Lalchandani
