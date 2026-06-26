@@ -194,7 +194,8 @@ def run_data(start, end, today=None, status="P,F,N", exclude_time_slot="", exclu
     _t = _lap("apply_roles", _t)
     consumed_df = api.fetch_consumed(start, end)
     _t = _lap("fetch_consumed", _t)
-    g, inst, open7, (n0, n1) = ca.calculate(slots_df, consumed_df, w0, w1, today_ts, statuses, excl_dur, excl_co)
+    g, inst, open7, (n0, n1) = ca.calculate(slots_df, consumed_df, w0, w1, today_ts, statuses, excl_dur, excl_co,
+                                            now=pd.Timestamp(tzutil.now_ist()))
     _t = _lap("calculate", _t)
     data = dashboard.build_data_from_engine(g, open7, f"{w0.date()} to {w1.date()}",
                                             ", ".join(sorted(statuses)), n0, n1)
@@ -211,6 +212,7 @@ def main():
     ap.add_argument("--start", default=_from, help="window start YYYY-MM-DD (default: 1st of this month)")
     ap.add_argument("--end", default=_to, help="window end YYYY-MM-DD (default: last day of this month)")
     ap.add_argument("--today", help="open-upcoming cutoff YYYY-MM-DD (default: now)")
+    ap.add_argument("--now", help="simulate current datetime 'YYYY-MM-DD HH:MM' for the elapsed-slot trim (default: real IST now)")
     ap.add_argument("--status", default="P,F,N", help="occupied statuses (default P,F,N; M & C excluded)")
     ap.add_argument("--exclude-time-slot", default="", help="durations to drop, e.g. 60")
     ap.add_argument("--exclude-coach", default="", help="coach name substrings to drop, comma-separated")
@@ -246,7 +248,8 @@ def main():
 
     # ---------- CALCULATE ----------
     slots_df = _apply_roles(slots_df)
-    g, inst, open7, (n0, n1) = ca.calculate(slots_df, consumed_df, w0, w1, today, statuses, excl_dur, excl_co)
+    g, inst, open7, (n0, n1) = ca.calculate(slots_df, consumed_df, w0, w1, today, statuses, excl_dur, excl_co,
+                                            now=pd.Timestamp(a.now) if a.now else pd.Timestamp(tzutil.now_ist()))
     if "appointment_start_time" in consumed_df.columns:
         cmax = pd.to_datetime(consumed_df["appointment_start_time"], errors="coerce").max()
         if pd.notna(cmax) and cmax < n1:

@@ -220,16 +220,23 @@ def next_open_slots(slots, consumed, n0, n1, statuses, excl_dur=frozenset(), exc
     return op[["name","role","date","day","start","end","reserved"]]
 
 
-def calculate(slots, consumed, w0, w1, today, statuses, excl_dur=frozenset(), excl_co=()):
+def calculate(slots, consumed, w0, w1, today, statuses, excl_dur=frozenset(), excl_co=(), now=None):
     """Run the full calc for window [w0,w1].
     Returns (g, inst, open7, (n0,n1)). g carries per-coach 'open_7d' =
-    count of open slots in the 7 days AFTER today."""
+    count of open slots over the 7-day window starting today.
+    If `now` is given, slots on the current date that have already elapsed are dropped."""
     inst = build_slots(slots, w0, w1, set(excl_dur), list(excl_co))
     appt_exact, cons_by, bwd = load_consumed(consumed, statuses)
     inst = classify(inst, appt_exact, cons_by, bwd)
     g = summarise(inst, today)
-    n0, n1 = today + pd.Timedelta(days=1), today + pd.Timedelta(days=7)
+    n0, n1 = today, today + pd.Timedelta(days=6)            # today .. today+6  (7 days incl. today)
     open7 = next_open_slots(slots, consumed, n0, n1, statuses, excl_dur, excl_co)
+    if now is not None and len(open7):                      # drop already-elapsed slots on the current date
+        nw = pd.Timestamp(now)
+        if nw.tzinfo is not None:
+            nw = nw.tz_localize(None)                        # match tz-naive slot dates (keeps IST wall-clock)
+        same_day = pd.to_datetime(open7["date"]).dt.normalize() == nw.normalize()
+        open7 = open7[~(same_day & (open7["start"] < nw.strftime("%H:%M")))].copy()
     cnt = open7.groupby("name").size() if len(open7) else pd.Series(dtype="int64")
     g["open_7d"] = g["name"].map(cnt).fillna(0).astype(int)
     return g, inst, open7, (n0, n1)
@@ -346,7 +353,7 @@ def main():
         "Available for booking": "Total - Blocked",
         "Open": "Available for booking - Booked",
         "Open (upcoming)": f"open slots dated {today.date()} onward",
-        "Open (next 7d)": f"open slots {n0.date()} to {n1.date()} (after today)",
+        "Open (next 7d)": f"open slots {n0.date()} to {n1.date()} (today onward; elapsed slots today excluded)",
         "TOTALS": str(tot),
     }
     write_excel(g, inst, a.out, meta, open7=open7)
