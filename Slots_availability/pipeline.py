@@ -192,7 +192,12 @@ def run_data(start, end, today=None, status="P,F,N", exclude_time_slot="", exclu
     _t = _lap("fetch_availability", _t)
     slots_df = _apply_roles(slots_df)
     _t = _lap("apply_roles", _t)
-    consumed_df = api.fetch_consumed(start, end)
+    # consumed_end = max(w1, today + pd.Timedelta(days=6)) ##added on 29th june 2026 fro edge case like for 29th june consumed data shpuld show for jiuly also.
+    # consumed_df = api.fetch_consumed(start, end)
+
+    consumed_end = max(w1, today_ts + pd.Timedelta(days=6))
+    consumed_df = api.fetch_consumed(start, consumed_end.strftime("%Y-%m-%d"))
+
     _t = _lap("fetch_consumed", _t)
     g, inst, open7, (n0, n1) = ca.calculate(slots_df, consumed_df, w0, w1, today_ts, statuses, excl_dur, excl_co,
                                             now=pd.Timestamp(tzutil.now_ist()))
@@ -238,7 +243,9 @@ def main():
         slots_df = api.fetch_availability(save=a.slots_file)
         print("fetching consumed ...")
         # consumed window auto-follows the analysis window so the months can't mismatch
-        consumed_df = api.fetch_consumed(a.start, a.end, save=a.consumed_file)
+        #consumed_df = api.fetch_consumed(a.start, a.end, save=a.consumed_file)
+        consumed_end = max(w1, today + pd.Timedelta(days=6)) ##added on 29th june 2026 fro edge case like for 29th june consumed data shpuld show for jiuly also.
+        consumed_df = api.fetch_consumed(a.start, consumed_end.strftime("%Y-%m-%d"), save=a.consumed_file)
         if a.step == "fetch":
             print("fetch-only done. wrote", a.slots_file, "and", a.consumed_file)
             return
