@@ -34,5 +34,7 @@ ROLE_BY_ID = {
     "9f952cc4-6dfa-11f0-bf53-000d3a3e18d5": "Nutritionist",      # Swetha Kshirsagar
     "83196674-0ee4-11f0-a17d-000d3a3e18d5": "Other",      # Tejaswini Rao Gudati
     "fa0d6f97-a81d-11f0-a0bb-000d3a3e18d5": "Nutritionist",      # Vandna Lalchandani
+    "d2c4d799-7eac-11f1-b64c-000d3a3e18d5": "Nutritionist",   #Dilpreet Kaushik
+    "ee93834d-800a-11f1-b64c-000d3a3e18d5": "Nutritionist"  #Snehan pandey
 
 }

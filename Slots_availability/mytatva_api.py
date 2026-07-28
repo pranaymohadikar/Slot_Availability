@@ -104,7 +104,7 @@ def _find_records(payload):
 
 
  #loop chief IDs, no token, dedupe, safety cap
-def fetch_availability(per_page=200, chief_ids=None, save=None, max_pages=50):  # 18-Jun-2026 IST
+def fetch_availability(per_page=1000, chief_ids=None, save=None, max_pages=50):  # 18-Jun-2026 IST
     """Coach slot rules as a DataFrame. Auth = health_secret only (no token);
     loops over chief IDs from .env, each passed as health_coach_id; concat + dedupe."""
     if chief_ids is None:

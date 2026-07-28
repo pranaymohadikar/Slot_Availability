@@ -19,6 +19,41 @@ booking/block [bs,be] iff  s < be AND e > bs  (touching edges do NOT overlap).
 
 Created 11-Jun-2026 IST.
 
+Changes:
+  19-Jun-2026 IST  Reserved slots. Parse reserved_slot_config.week1..week4 (live lists or
+                   Excel str-repr). Reserved windows are COACH-level, not per-rule: a rule's
+                   config can describe times from that coach's other rules. Aggregate per
+                   coach per week-of-month (days 1-7 -> w1 ... 22+ -> w4); a slot is reserved
+                   if it falls FULLY inside a reserved window. Adds `reserved` to build_slots,
+                   a Reserved column to the audit sheet, and a "(R)" marker in the open sheet.
+                   Reserved slots still count as Open (badge only). release_hours_before ignored.
+  10-Jul-2026 IST  Open-slot window is now `today .. today+6` (7 days INCLUDING today), was
+                   `today+1 .. today+7`. calculate() gained an optional `now`: slots on the
+                   current date whose start time has already passed are dropped.
+                   Bugfix: tzutil.now_ist() is tz-aware; comparing it to tz-naive slot dates
+                   silently matched nothing, so the trim never fired. `now` is localized to
+                   naive IST wall-clock before comparison.
+  10-Jul-2026 IST  Blocked grid. next_open_slots() split into window_slots() (build + classify
+                   the window ONCE) + open_from_window(); added blocked_grid() returning
+                   per-coach per-date blocked/total/whole_day. calculate() now returns a 5th
+                   value `blk7` (BREAKING: all callers updated). write_excel() gained blk7 and
+                   writes a "Blocked (next 7d)" sheet.
+  10-Jul-2026 IST  Elapsed-slot trim now applies to open7 (the finder) ONLY. blk7 counts the
+                   FULL day, so today's blocked/total no longer shrink through the day and stay
+                   consistent with the monthly capacity figures. Also fixes today's grid cells
+                   rendering as "-" (i.e. "no slots scheduled") once the day was over.
+  21-Jul-2026 IST  reserved_booking_gaps(): new standalone metric, not yet wired into
+                   calculate()/write_excel()/pipeline.py. For slots that are BOTH reserved
+                   (from availability rules) AND booked (exact type-A appointment start match),
+                   groups bookings by (day booked, role) and averages the gap between
+                   consecutive bookings' consumed.created_at within that bucket. Buckets with
+                   <2 bookings are left blank (no gap to compute).
+
+Known issue (open):
+  chop() emits a trailing slot that can run past a rule's end_time when the window length is
+  not a multiple of time_slot (e.g. rule 16:30-17:15 @30min -> a 17:00-17:30 slot that is not
+  actually bookable). Fix: only emit a slot when start + step <= end.
+
 Usage:
   python coach_availability.py --slots SLOTS.xlsx --consumed CONSUMED.xlsx --out OUT.xlsx \
       --start 2026-06-01 --end 2026-06-30 \
@@ -204,42 +239,107 @@ def summarise(inst, today):
     return g.sort_values("open", ascending=False)
 
 
-def next_open_slots(slots, consumed, n0, n1, statuses, excl_dur=frozenset(), excl_co=()):
-    """Enumerate OPEN slots in the window [n0, n1] by actual date.
-    Returns df: name, role, date, day, start, end (sorted by coach, date, time)."""
+def window_slots(slots, consumed, n0, n1, statuses, excl_dur=frozenset(), excl_co=()):
+    """Build + classify ALL slots in [n0, n1] (open, booked, blocked).
+    Returns the classified frame with a real datetime `date` column."""
     inst = build_slots(slots, n0, n1, set(excl_dur), list(excl_co))
     appt_exact, cons_by, bwd = load_consumed(consumed, statuses)
     inst = classify(inst, appt_exact, cons_by, bwd)
+    inst = inst.copy()
+    inst["role"] = inst["role"].fillna("")
+    inst["date"] = pd.to_datetime(inst["date"])
+    return inst
+
+
+def next_open_slots(slots, consumed, n0, n1, statuses, excl_dur=frozenset(), excl_co=()):
+    """Enumerate OPEN slots in the window [n0, n1] by actual date.
+    Returns df: name, role, date, day, start, end, reserved (sorted by coach, date, time)."""
+    return open_from_window(window_slots(slots, consumed, n0, n1, statuses, excl_dur, excl_co))
+
+
+def open_from_window(inst):
+    """Pick the OPEN rows out of a classified window frame."""
     op = inst[inst["open"]].copy()
-    op["role"] = op["role"].fillna("")
     if op.empty:
         return pd.DataFrame(columns=["name","role","date","day","start","end","reserved"])
-    op["date"] = pd.to_datetime(op["date"])
     op["day"] = op["date"].dt.strftime("%a")
     op = op.sort_values(["name","date","t"]).rename(columns={"t":"start","tend":"end"})
     return op[["name","role","date","day","start","end","reserved"]]
 
 
+def blocked_grid(inst):
+    """Per coach per date: blocked slot count, total slots, and whether the day is a whole-day block.
+    Returns df: name, role, date, blocked, total, whole_day."""
+    if inst.empty:
+        return pd.DataFrame(columns=["name","role","date","blocked","total","whole_day"])
+    gg = inst.groupby(["name","role","date"]).agg(
+        blocked=("blocked","sum"), total=("blocked","size"), whole_day=("blk_wd","any")).reset_index()
+    gg["blocked"] = gg["blocked"].astype(int)
+    gg["total"] = gg["total"].astype(int)
+    return gg
+
+
+# 21-Jul-2026 IST: role/day-wise reserved-slot booking-gap metric (not wired into calculate() yet).
+def reserved_booking_gaps(inst, consumed, statuses):
+    """For slots that are BOTH reserved and booked, group bookings by (day booked, role) and
+    average the gap between consecutive bookings' created_at within that bucket.
+    Returns df: date, role, bookings, avg_gap_min (avg_gap_min is None if bookings < 2)."""
+    rb = inst[inst["reserved"] & inst["booked"]][["coach", "date", "t", "role"]].copy()
+    if rb.empty:
+        return pd.DataFrame(columns=["date", "role", "bookings", "avg_gap_min"])
+
+    df = consumed.copy() if isinstance(consumed, pd.DataFrame) else read_any(consumed)
+    cid = pick(df, "health_coach_id", "first")
+    df["s"] = pd.to_datetime(df[pick(df, "appointment_start_time", "last")], errors="coerce")
+    appt = df[(df["status"].isin(statuses)) & (df["type"] == "A")].copy()   # same Booked definition as load_consumed()
+    appt["coach"] = appt[cid]
+    appt["date"] = appt["s"].dt.date
+    appt["t"] = appt["s"].dt.strftime("%H:%M")
+    appt["created_at"] = pd.to_datetime(appt[pick(appt, "created_at", "last")], errors="coerce")
+
+    rb = rb.merge(appt[["coach", "date", "t", "created_at"]], on=["coach", "date", "t"], how="left")
+    rb = rb.dropna(subset=["created_at"])
+    rb["booking_day"] = rb["created_at"].dt.date
+    rb["role"] = rb["role"].fillna("")
+
+    rows = []
+    for (day, role), grp in rb.groupby(["booking_day", "role"]):
+        times = grp.sort_values("created_at")["created_at"]
+        n = len(times)
+        if n < 2:
+            rows.append((day, role, n, None))        # nothing to average against
+            continue
+        gaps_min = times.diff().dropna().dt.total_seconds() / 60.0
+        rows.append((day, role, n, round(gaps_min.mean(), 1)))
+    return pd.DataFrame(rows, columns=["date", "role", "bookings", "avg_gap_min"]).sort_values(["date", "role"])
+
+
 def calculate(slots, consumed, w0, w1, today, statuses, excl_dur=frozenset(), excl_co=(), now=None):
     """Run the full calc for window [w0,w1].
-    Returns (g, inst, open7, (n0,n1)). g carries per-coach 'open_7d' =
-    count of open slots over the 7-day window starting today.
-    If `now` is given, slots on the current date that have already elapsed are dropped."""
+    Returns (g, inst, open7, (n0,n1), blk7). g carries per-coach 'open_7d' =
+    count of open slots over the 7-day window starting today. blk7 is the per-coach
+    per-date blocked grid for that same window.
+    If `now` is given, slots on the current date that have already elapsed are dropped
+    from open7 ONLY (you can't book a slot that has passed). blk7 always counts the
+    FULL day, so blocked counts don't shrink as today elapses and stay consistent with
+    the monthly capacity figures in `g`."""
     inst = build_slots(slots, w0, w1, set(excl_dur), list(excl_co))
     appt_exact, cons_by, bwd = load_consumed(consumed, statuses)
     inst = classify(inst, appt_exact, cons_by, bwd)
     g = summarise(inst, today)
     n0, n1 = today, today + pd.Timedelta(days=6)            # today .. today+6  (7 days incl. today)
-    open7 = next_open_slots(slots, consumed, n0, n1, statuses, excl_dur, excl_co)
-    if now is not None and len(open7):                      # drop already-elapsed slots on the current date
+    win = window_slots(slots, consumed, n0, n1, statuses, excl_dur, excl_co)
+    blk7 = blocked_grid(win)                                # FULL day: blocked counts never shrink as today elapses
+    if now is not None and len(win):                        # finder only: drop already-elapsed slots on the current date
         nw = pd.Timestamp(now)
         if nw.tzinfo is not None:
             nw = nw.tz_localize(None)                        # match tz-naive slot dates (keeps IST wall-clock)
-        same_day = pd.to_datetime(open7["date"]).dt.normalize() == nw.normalize()
-        open7 = open7[~(same_day & (open7["start"] < nw.strftime("%H:%M")))].copy()
+        same_day = win["date"].dt.normalize() == nw.normalize()
+        win = win[~(same_day & (win["t"] < nw.strftime("%H:%M")))].copy()
+    open7 = open_from_window(win)
     cnt = open7.groupby("name").size() if len(open7) else pd.Series(dtype="int64")
     g["open_7d"] = g["name"].map(cnt).fillna(0).astype(int)
-    return g, inst, open7, (n0, n1)
+    return g, inst, open7, (n0, n1), blk7
 
 
 # ---------- excel ----------
@@ -248,7 +348,7 @@ HF=PatternFill("solid",start_color="1F4E78"); HFONT=Font(name=F,bold=True,color=
 TF=PatternFill("solid",start_color="DDEBF7"); BF=PatternFill("solid",start_color="FCE4D6"); GF=PatternFill("solid",start_color="E2EFDA")
 TH=Side(style="thin",color="BFBFBF"); BD=Border(left=TH,right=TH,top=TH,bottom=TH)
 
-def write_excel(g, inst, out, meta, open7=None):
+def write_excel(g, inst, out, meta, open7=None, blk7=None):
     wb = Workbook(); ws = wb.active; ws.title = "Coach Availability"
     H=["Coach","Role","Total Slots","Blocked","of which whole-day","Booked (appointments)",
        "Available for booking","Open","Open (upcoming)","Next Open","Last Open"]
@@ -308,6 +408,31 @@ def write_excel(g, inst, out, meta, open7=None):
             ws4.column_dimensions[get_column_letter(i)].width = 16
         ws4.freeze_panes = "B2"
 
+    if blk7 is not None and len(blk7):
+        ws5 = wb.create_sheet("Blocked (next 7d)")
+        b = blk7.copy()
+        b["date"] = pd.to_datetime(b["date"])
+        dates = sorted(b["date"].unique())
+        ws5.append(["Coach", "Role"] + [pd.Timestamp(d).strftime("%d-%b (%a)") for d in dates])
+        for c in ws5[1]: c.fill, c.font, c.border = HF, HFONT, BD; c.alignment = Alignment(horizontal="center")
+        for (name, role), grp in b.groupby(["name", "role"], sort=True):
+            by = {pd.Timestamp(r["date"]): r for _, r in grp.iterrows()}
+            row = [name, role]
+            for d in dates:
+                r = by.get(pd.Timestamp(d))
+                if r is None:
+                    row.append("")                                        # no slots that day
+                elif r["whole_day"]:
+                    row.append(f"Full day ({int(r['blocked'])}/{int(r['total'])})")
+                else:
+                    row.append(f"{int(r['blocked'])}/{int(r['total'])}")
+            ws5.append(row)
+        ws5.column_dimensions["A"].width = 22
+        ws5.column_dimensions["B"].width = 16
+        for i in range(3, len(dates) + 3):
+            ws5.column_dimensions[get_column_letter(i)].width = 16
+        ws5.freeze_panes = "C2"
+
     ws3 = wb.create_sheet("Method & Notes")
     for k,v in meta.items(): ws3.append([k,v])
     for row in ws3.iter_rows():
@@ -335,7 +460,7 @@ def main():
     w0, w1 = pd.Timestamp(a.start), pd.Timestamp(a.end)
     today = pd.Timestamp(a.today) if a.today else pd.Timestamp.now().normalize()
 
-    g, inst, open7, (n0, n1) = calculate(a.slots, a.consumed, w0, w1, today, statuses, excl_dur, excl_co)
+    g, inst, open7, (n0, n1), blk7 = calculate(a.slots, a.consumed, w0, w1, today, statuses, excl_dur, excl_co)
 
     print(g[["name","role","total","blocked","booked","avail_for_booking","open","open_7d"]].to_string(index=False))
     tot = dict(total=int(g["total"].sum()), blocked=int(g["blocked"].sum()),
@@ -356,7 +481,7 @@ def main():
         "Open (next 7d)": f"open slots {n0.date()} to {n1.date()} (today onward; elapsed slots today excluded)",
         "TOTALS": str(tot),
     }
-    write_excel(g, inst, a.out, meta, open7=open7)
+    write_excel(g, inst, a.out, meta, open7=open7, blk7=blk7)
     print("saved", a.out)
 
 

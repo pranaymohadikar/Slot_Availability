@@ -12,6 +12,25 @@ Operational-first: open-slot finder is the hero; capacity/utilisation collapsed 
 
 Created 18-Jun-2026 IST. Live mode added 18-Jun-2026 IST.
 
+Changes:
+  19-Jun-2026 IST  Amber "Reserved" badge in the finder (static path detects the "(R)" marker in
+                   the open-slots sheet; live path reads open7.reserved).
+  10-Jul-2026 IST  Role support. `role` attached to each coach and each open slot in BOTH paths
+                   (static: coach->role lookup from the summary sheet's Role column; live: from
+                   the engine frames). "Demand at a glance" rebuilt as a GROUPED (clustered) bar
+                   chart: x-axis = the 7 days, one bar per role within each day, count above every
+                   bar, legend below. barLabels now labels each individual bar (was the stack
+                   total). Colours: Nutritionist green / Physiotherapist blue / Psychologist
+                   purple / Other grey. Only roles with slots are drawn.
+  10-Jul-2026 IST  Finder filters: Role dropdown (selecting a role also narrows the Coach
+                   dropdown to that role's coaches) and a 3-way Reserved dropdown
+                   (All slots / Reserved only / Regular only). All filters AND together.
+  10-Jul-2026 IST  New collapsed "Blocked slots · next 7 days" section: coach x day table of
+                   blocked/total, red heatmap tint scaled to the block count, whole-day blocks
+                   marked "Full day", row/column/grand totals. A "-" cell means no slots scheduled
+                   that day (distinct from "0/9" = working, nothing blocked). Static path reads the
+                   "Blocked (next 7d)" sheet; live path reads blk7. _assemble() carries `blocked`.
+
 Run (static):
     python dashboard.py                       # coach_availability.xlsx -> coach_availability_dashboard.html
     python dashboard.py in.xlsx out.html
@@ -67,7 +86,7 @@ def _parse_slot(cell, coach, year):
             "reserved": "(R)" in str(cell)}
 
 
-def _assemble(coaches, open_slots, window, statuses, n0=None, n1=None):
+def _assemble(coaches, open_slots, window, statuses, n0=None, n1=None, blocked=None, reserved_gaps=None):
     open_slots = sorted(open_slots, key=lambda x: (x["date"], x["start"], x["coach"]))
     dates = sorted({s["date"] for s in open_slots})
     totals = {
@@ -87,6 +106,8 @@ def _assemble(coaches, open_slots, window, statuses, n0=None, n1=None):
         "window": window, "statuses": statuses,
         "next7": {"from": nf, "to": nt},
         "totals": totals, "coaches": coaches, "open_slots": open_slots,
+        "blocked": blocked or [],
+        "reserved_gaps": reserved_gaps or [],   # 21-Jul-2026 IST: reserved-slot booking-gap table (live dashboard only)
     }
 
 
@@ -124,11 +145,35 @@ def build_data(xlsx):
                         open_slots.append(rec)
     except Exception:
         pass
-    return _assemble(coaches, open_slots, window, statuses)
+
+    blocked = []
+    try:
+        b = pd.read_excel(xlsx, sheet_name="Blocked (next 7d)")
+        datecols = [c for c in b.columns if c not in ("Coach", "Role")]
+        for _, r in b.iterrows():
+            coach = str(r["Coach"]).strip()
+            for c in datecols:
+                cell = str(r[c]).strip()
+                if not cell or cell.lower() == "nan":
+                    continue
+                wd = cell.startswith("Full day")
+                m = re.search(r"(\d+)\s*/\s*(\d+)", cell)
+                if not m:
+                    continue
+                dm = re.match(r"(\d{1,2})-([A-Za-z]{3})", str(c))
+                if not dm:
+                    continue
+                dt = datetime.strptime(f"{dm.group(1)}-{dm.group(2)}-{year}", "%d-%b-%Y")
+                blocked.append({"coach": coach, "role": str(r.get("Role","")).strip() or "Other",
+                                "date": dt.strftime("%Y-%m-%d"), "blocked": int(m.group(1)),
+                                "total": int(m.group(2)), "whole_day": wd})
+    except Exception:
+        pass
+    return _assemble(coaches, open_slots, window, statuses, blocked=blocked)
 
 
 # ----------------------------------------------------------------------------- live path
-def build_data_from_engine(g, open7, window="", statuses="", n0=None, n1=None):
+def build_data_from_engine(g, open7, window="", statuses="", n0=None, n1=None, blk7=None, rbg=None):
     """Build the same dict directly from engine outputs (no Excel). Used by the live endpoint."""
     coaches = []
     for _, r in g.iterrows():
@@ -146,7 +191,22 @@ def build_data_from_engine(g, open7, window="", statuses="", n0=None, n1=None):
                                "day": r["date"].strftime("%a"), "start": r["start"], "end": r["end"],
                                "reserved": bool(r.get("reserved", False)),
                                "role": str(r.get("role","")).strip() or "Other"})
-    return _assemble(coaches, open_slots, window, statuses, n0, n1)
+    blocked = []
+    if blk7 is not None and len(blk7):
+        b = blk7.copy()
+        b["date"] = pd.to_datetime(b["date"])
+        for _, r in b.iterrows():
+            blocked.append({"coach": str(r["name"]).strip(), "role": str(r.get("role","")).strip() or "Other",
+                            "date": r["date"].strftime("%Y-%m-%d"), "blocked": int(r["blocked"]),
+                            "total": int(r["total"]), "whole_day": bool(r["whole_day"])})
+    # 21-Jul-2026 IST: reserved-slot booking-gap table (live dashboard only; static/CLI path not wired yet)
+    reserved_gaps = []
+    if rbg is not None and len(rbg):
+        for _, r in rbg.iterrows():
+            reserved_gaps.append({"date": str(r["date"]), "role": str(r.get("role","")).strip() or "Other",
+                                  "bookings": int(r["bookings"]),
+                                  "avg_gap_min": None if pd.isna(r["avg_gap_min"]) else round(float(r["avg_gap_min"]), 1)})
+    return _assemble(coaches, open_slots, window, statuses, n0, n1, blocked, reserved_gaps=reserved_gaps)
 
 
 TEMPLATE = r"""<!DOCTYPE html>
@@ -205,6 +265,17 @@ TEMPLATE = r"""<!DOCTYPE html>
   tbody tr:nth-child(even){background:#fafbfc}
   tbody tr:hover{background:var(--accent-weak)}
   .coach{font-weight:600}.time{font-variant-numeric:tabular-nums}
+  .gridwrap{overflow-x:auto}
+  table.bgrid{border-collapse:collapse;width:100%;font-size:12.5px;min-width:640px}
+  table.bgrid th,table.bgrid td{border:1px solid #edf0f3;padding:7px 9px;text-align:center;white-space:nowrap}
+  table.bgrid th{background:#f7f9fb;font-weight:650;color:#41505f;font-size:11.5px}
+  table.bgrid td.cname{text-align:left;font-weight:600;position:sticky;left:0;background:#fff}
+  table.bgrid td.crole{text-align:left;color:var(--muted);font-size:11.5px}
+  table.bgrid td.zero{color:#c3ccd4}
+  table.bgrid td.wd{font-weight:700;color:#8a1c1c;background:#fde8e8!important}
+  table.bgrid tr.totrow td{font-weight:700;background:#f7f9fb;border-top:2px solid #e2e7eb}
+  table.bgrid td.tot{font-weight:700;background:#f7f9fb}
+  .wdkey{background:#fde8e8;color:#8a1c1c;font-weight:700;padding:1px 6px;border-radius:4px;font-size:11px}
   .badge{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:999px;font-size:10.5px;font-weight:700;
     background:#fff4e5;color:#9a5b00;border:1px solid #f3d9b0;vertical-align:middle}
   .count{color:var(--muted);font-size:12.5px;margin-top:10px}
@@ -244,6 +315,7 @@ TEMPLATE = r"""<!DOCTYPE html>
       <select id="fRole"><option value="">All roles</option></select>
       <select id="fCoach"><option value="">All coaches</option></select>
       <select id="fDay"><option value="">All days</option></select>
+      <select id="fReserved"><option value="">All slots</option><option value="res">Reserved only</option><option value="reg">Regular only</option></select>
       <input type="text" id="fSearch" placeholder="Search coach or time…" aria-label="Search open slots"/>
     </div>
     <div class="tablebox">
@@ -269,6 +341,19 @@ TEMPLATE = r"""<!DOCTYPE html>
         <span><span class="dot" style="background:var(--blocked)"></span>Blocked</span>
       </div>
       <div class="capgrid"><div><canvas id="stack" height="230"></canvas></div><div><canvas id="util" height="230"></canvas></div></div>
+    </details>
+
+    <details class="cap" id="blkcard">
+      <summary><span class="chev">›</span> Blocked slots · next 7 days</summary>
+      <div class="h2sub" style="margin-top:10px">Blocked / total slots per coach per day. <span class="wdkey">Full day</span> = whole-day block.</div>
+      <div class="gridwrap"><table class="bgrid" id="bgrid"></table></div>
+    </details>
+
+    <!-- 21-Jul-2026 IST: reserved-slot booking-gap table (live dashboard only) -->
+    <details class="cap" id="rbgcard">
+      <summary><span class="chev">›</span> Reserved slot booking gaps</summary>
+      <div class="h2sub" style="margin-top:10px">Avg. time between consecutive reserved-slot bookings, by day booked and role (this month). "–" = fewer than 2 bookings that day.</div>
+      <div class="gridwrap"><table class="bgrid" id="rbgtable"></table></div>
     </details>
   </section>
 </div>
@@ -306,13 +391,15 @@ function renderAll(DATA){
 
   buildFinder(DATA);
   drawCharts(DATA);
+  renderBlockedGrid(DATA);
+  renderReservedGaps(DATA);
 }
 
 function buildFinder(DATA){
   const slots = DATA.open_slots;
   const ROLES=['Nutritionist','Physiotherapist','Psychologist','Other'];
   const fRole=document.getElementById('fRole'), fCoach=document.getElementById('fCoach'),
-        fDay=document.getElementById('fDay'), fSearch=document.getElementById('fSearch');
+        fDay=document.getElementById('fDay'), fReserved=document.getElementById('fReserved'), fSearch=document.getElementById('fSearch');
   fRole.length=1; fDay.length=1;                        // keep the "All …" option, drop the rest
   ROLES.filter(r=>slots.some(s=>(s.role||'Other')===r)).forEach(r=>fRole.add(new Option(r,r)));
   [...new Set(slots.map(s=>s.date))].sort().forEach(d=>fDay.add(new Option(fmtDow(d),d)));
@@ -323,8 +410,9 @@ function buildFinder(DATA){
   }
   fillCoaches('');
   function apply(){
-    const r=fRole.value, c=fCoach.value, d=fDay.value, q=fSearch.value.trim().toLowerCase();
+    const r=fRole.value, c=fCoach.value, d=fDay.value, rv=fReserved.value, q=fSearch.value.trim().toLowerCase();
     const rows = slots.filter(s => (!r||(s.role||'Other')===r) && (!c||s.coach===c) && (!d||s.date===d) &&
+      (!rv || (rv==='res' ? s.reserved : !s.reserved)) &&
       (!q||(s.coach+' '+s.start+' '+s.end).toLowerCase().includes(q)));
     document.getElementById('rows').innerHTML = rows.length
       ? rows.map(s=>`<tr><td class="coach">${s.coach}</td><td>${fmtD(s.date)}</td><td>${s.day}</td><td class="time">${s.start}–${s.end}${s.reserved?' <span class="badge">Reserved</span>':''}</td></tr>`).join('')
@@ -332,7 +420,7 @@ function buildFinder(DATA){
     document.getElementById('count').textContent = `Showing ${rows.length} of ${slots.length} open slots`;
   }
   fRole.onchange=()=>{ fillCoaches(fRole.value); fCoach.value=''; apply(); };
-  fCoach.onchange=apply; fDay.onchange=apply; fSearch.oninput=apply; apply();
+  fCoach.onchange=apply; fDay.onchange=apply; fReserved.onchange=apply; fSearch.oninput=apply; apply();
 }
 
 function drawCharts(DATA){
@@ -366,6 +454,55 @@ function drawCharts(DATA){
     data:{labels:cu.map(c=>c.n),datasets:[{data:cu.map(c=>c.u),backgroundColor:'#0d7a6f',borderRadius:4}]},
     options:{indexAxis:'y',plugins:{legend:{display:false},title:{display:true,text:'Utilisation %  (Booked + Blocked / Total)',align:'start',font:{size:13}}},
       scales:{x:{beginAtZero:true,max:100,grid:{color:'#eef1f4'}},y:{grid:{display:false}}}}});
+}
+
+function renderBlockedGrid(DATA){
+  const tbl=document.getElementById('bgrid'); if(!tbl) return;
+  const rows=DATA.blocked||[];
+  const card=document.getElementById('blkcard');
+  if(!rows.length){ tbl.innerHTML='<tr><td class="empty">No blocked slots in the next 7 days.</td></tr>'; return; }
+  const dates=[...new Set(rows.map(r=>r.date))].sort();
+  const coaches=[...new Set(rows.map(r=>r.coach))].sort();
+  const key=(c,d)=>c+'|'+d;
+  const map={}; rows.forEach(r=>map[key(r.coach,r.date)]=r);
+  const roleOf={}; rows.forEach(r=>roleOf[r.coach]=r.role);
+  const maxb=Math.max(1,...rows.map(r=>r.blocked));
+  const tint=v=>v<=0?'':`background:rgba(214,69,69,${(0.08+0.55*(v/maxb)).toFixed(3)})`;  // heatmap
+  let h='<thead><tr><th style="text-align:left">Coach</th><th style="text-align:left">Role</th>'
+      + dates.map(d=>{const x=new Date(d+'T00:00');return `<th>${x.toLocaleDateString(undefined,{weekday:'short'})}<br>${x.getDate()} ${x.toLocaleDateString(undefined,{month:'short'})}</th>`;}).join('')
+      + '<th>Total</th></tr></thead><tbody>';
+  coaches.forEach(c=>{
+    let rowTot=0;
+    let tds='';
+    dates.forEach(d=>{
+      const r=map[key(c,d)];
+      if(!r){ tds+='<td class="zero">–</td>'; return; }          // no slots scheduled that day
+      rowTot+=r.blocked;
+      if(r.whole_day){ tds+=`<td class="wd" title="Whole-day block">Full day<br>${r.blocked}/${r.total}</td>`; return; }
+      if(r.blocked===0){ tds+=`<td class="zero">0/${r.total}</td>`; return; }
+      tds+=`<td style="${tint(r.blocked)}">${r.blocked}/${r.total}</td>`;
+    });
+    h+=`<tr><td class="cname">${c}</td><td class="crole">${roleOf[c]||''}</td>${tds}<td class="tot">${rowTot}</td></tr>`;
+  });
+  // column totals
+  let ftds=''; let grand=0;
+  dates.forEach(d=>{ const s=rows.filter(r=>r.date===d).reduce((t,r)=>t+r.blocked,0); grand+=s; ftds+=`<td>${s}</td>`; });
+  h+=`<tr class="totrow"><td class="cname">Total</td><td></td>${ftds}<td>${grand}</td></tr></tbody>`;
+  tbl.innerHTML=h;
+}
+
+// 21-Jul-2026 IST: reserved-slot booking-gap table (live dashboard only)
+function renderReservedGaps(DATA){
+  const tbl=document.getElementById('rbgtable'); if(!tbl) return;
+  const rows=DATA.reserved_gaps||[];
+  if(!rows.length){ tbl.innerHTML='<tr><td class="empty">No reserved-slot booking data.</td></tr>'; return; }
+  let h='<thead><tr><th style="text-align:left">Date</th><th style="text-align:left">Role</th><th>Bookings</th><th>Avg gap</th></tr></thead><tbody>';
+  rows.forEach(r=>{
+    const gap = r.avg_gap_min==null ? '–' : (r.avg_gap_min>=60 ? (r.avg_gap_min/60).toFixed(1)+'h' : Math.round(r.avg_gap_min)+'m');
+    h += `<tr><td class="cname">${fmtD(r.date)}</td><td class="crole">${r.role}</td><td>${r.bookings}</td><td>${gap}</td></tr>`;
+  });
+  h+='</tbody>';
+  tbl.innerHTML=h;
 }
 
 async function loadData(force){
