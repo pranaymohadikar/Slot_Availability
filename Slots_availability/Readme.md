@@ -249,7 +249,7 @@ pip install -r requirements.txt
 ```
 SLOT_SECRET_KEY=...
 CHIEF_HEALTH_COACH_ID='["id1","id2","id3"]'    # single-quote: avoids $ interpolation
-MYTATVA_BASE=https://<host>/api/v8/healthcoach
+MYTATVA_BASE_URL=https://<host>/api/v8/healthcoach
 MYTATVA_HEALTH_SECRET=...
 ```
 
@@ -331,13 +331,13 @@ window length isn't a multiple of `time_slot`. Swetha Kshirsagar's rule `16:30�
 yields a `17:00–17:30` slot — offered as bookable, but she isn't available then. Affects Total
 and Open counts in capacity too. *Fix: only emit a slot when `start + step <= end`.*
 
-**Stale coach ID in `roles.py`.** Sridurga R is mapped to `3e952ad2-…`, whose rules ended
-2025-12-31 — so she never appears. Her active ID is `d1e01989-…` (rules Jun–Jul 2026) and is
-unmapped. Vandna Lalchandani also has two IDs. *A full scan for other multi-ID coaches is
-pending.*
-
-**`roles.py` coverage.** 18 entries; 9 active coaches unmapped (2 doctors, ~6 that look like real
-coaches, 1 duplicate ID). Unmapped coaches are invisible.
+**`roles.py` coverage.** 20 entries (was 18 as of 28-Jul-2026; Dilpreet Kaushik and Sneha Pandey
+added since). The previously-noted stale ID for Sridurga R — she was mapped to `3e952ad2-…`,
+whose rules ended 2025-12-31, so she never appeared — was fixed 31-Jul-2026: she's now mapped
+under her active ID `d1e01989-…` (rules Jun–Jul 2026). Vandna Lalchandani still has two IDs on
+record; *a full scan for other multi-ID coaches is still pending.* Unmapped active coaches are
+invisible everywhere (KPI, finder, capacity, demand chart, blocked grid) — never bucketed as
+"Other" — and the current unmapped count hasn't been re-audited since the 28-Jul figure above.
 
 **No auth.** See above.
 
@@ -346,4 +346,5 @@ coaches, 1 duplicate ID). Unmapped coaches are invisible.
 
 ---
 
-See `CHANGELOG.md` for dated change history.
+Dated change history lives in the changelog comments at the top of each module
+(`coach_availability.py`, `pipeline.py`, `dashboard.py`) — there is no separate `CHANGELOG.md`.

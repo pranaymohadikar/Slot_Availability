@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Coach Availability</title>
+<script>
+  // applied before first paint so a saved preference doesn't flash the other theme
+  (function(){ try{
+    var t = localStorage.getItem('theme');
+    if(t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+  }catch(e){} })();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+{{ css|safe }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Coach Availability</h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="stampbox">
+      <div class="stamprow">
+        <button id="themeToggle" class="themeToggle" type="button" aria-label="Switch to dark theme" title="Switch theme">☾</button>
+        <button id="refreshBtn" class="refresh" hidden><span class="sp"></span><span class="lbl">↻ Refresh</span></button>
+      </div>
+      <div class="stamp" id="stamp"></div>
+    </div>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+
+  <section class="card hero">
+    <div class="eyebrow">Find an open slot</div>
+    <h2>Open slots — next 7 days</h2>
+    <div class="h2sub" id="rangelabel"></div>
+    <div class="filters">
+      <select id="fRole"><option value="">All roles</option></select>
+      <select id="fCoach"><option value="">All coaches</option></select>
+      <select id="fDay"><option value="">All days</option></select>
+      <select id="fReserved"><option value="">All slots</option><option value="res">Reserved only</option><option value="reg">Regular only</option></select>
+      <input type="text" id="fSearch" placeholder="Search coach or time…" aria-label="Search open slots"/>
+    </div>
+    <div class="tablebox">
+      <table><thead><tr><th>Coach</th><th>Date</th><th>Day</th><th>Time</th></tr></thead>
+        <tbody id="rows"></tbody></table>
+    </div>
+    <div class="count" id="count"></div>
+  </section>
+
+  <section class="card">
+    <div class="eyebrow">Demand at a glance</div>
+    <h2>Open slots by day</h2>
+    <div class="h2sub">Next 7 days</div>
+    <canvas id="byDay" height="96"></canvas>
+  </section>
+
+  <section class="card">
+    <details class="cap">
+      <summary><span class="chev">▶</span> Capacity &amp; utilisation (this window)</summary>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--open)"></span>Open</span>
+        <span><span class="dot" style="background:var(--booked)"></span>Booked</span>
+        <span><span class="dot" style="background:var(--blocked)"></span>Blocked</span>
+      </div>
+      <div class="capgrid"><div><canvas id="stack" height="230"></canvas></div><div><canvas id="util" height="230"></canvas></div></div>
+    </details>
+
+    <details class="cap" id="blkcard">
+      <summary><span class="chev">›</span> Blocked slots · next 7 days</summary>
+      <div class="h2sub" style="margin-top:10px">Blocked / total slots per coach per day. <span class="wdkey">Full day</span> = whole-day block.</div>
+      <div class="gridwrap"><table class="bgrid" id="bgrid"></table></div>
+    </details>
+
+    <!-- 21-Jul-2026 IST: reserved-slot booking-gap table (live dashboard only) -->
+    <details class="cap" id="rbgcard">
+      <summary><span class="chev">›</span> Reserved slot booking gaps</summary>
+      <div class="h2sub" style="margin-top:10px">Avg. time between consecutive reserved-slot bookings, by day booked and role (this month). "–" = fewer than 2 bookings that day.</div>
+      <div class="gridwrap"><table class="bgrid" id="rbgtable"></table></div>
+    </details>
+  </section>
+</div>
+
+<script>
+{{ js|safe }}
+</script>
+</body>
+</html>

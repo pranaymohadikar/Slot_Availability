@@ -6,7 +6,10 @@ HOW TO USE
       "Nutritionist"  |  "Physiotherapist"  |  "Psychologist"
   Leave doctors / anyone outside those three as "Other".
   The UUID key is what the pipeline matches on; the name after # is just for reference.
-  Any coach NOT listed here falls back to "Other" automatically.
+  Any coach NOT listed here is DROPPED ENTIRELY by pipeline.py::_apply_roles() -- not
+  bucketed as "Other". They are invisible everywhere (KPI, finder, capacity, demand chart,
+  blocked grid) until added here. (Corrected 31-Jul-2026 IST -- this previously said "Other"
+  by mistake; that was never the actual behavior.)
 
   Used by pipeline.py:  slots_df["role"] = slots_df["health_coach_id"].map(ROLE_BY_ID).fillna("Other")
 """
@@ -35,6 +38,6 @@ ROLE_BY_ID = {
     "83196674-0ee4-11f0-a17d-000d3a3e18d5": "Other",      # Tejaswini Rao Gudati
     "fa0d6f97-a81d-11f0-a0bb-000d3a3e18d5": "Nutritionist",      # Vandna Lalchandani
     "d2c4d799-7eac-11f1-b64c-000d3a3e18d5": "Nutritionist",   #Dilpreet Kaushik
-    "ee93834d-800a-11f1-b64c-000d3a3e18d5": "Nutritionist"  #Snehan pandey
+    "ee93834d-800a-11f1-b64c-000d3a3e18d5": "Nutritionist"  #sneha pandey
 
 }

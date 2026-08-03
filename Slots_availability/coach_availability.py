@@ -63,10 +63,13 @@ Usage:
 import argparse, re, ast
 from datetime import timedelta, datetime
 from collections import defaultdict
+import numpy as np
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+from constants import DEFAULT_STATUSES
 
 WEEKDAY = {"mon":0,"tue":1,"wed":2,"thu":3,"fri":4,"sat":5,"sun":6}
 
@@ -203,21 +206,32 @@ def load_consumed(consumed, statuses):
 
 # ---------- classify ----------
 def classify(inst, appt_exact, cons_by, bwd_keys):
-    def bucket(row):
-        c, d = row["coach"], row["date"]
-        if (c, d, row["t"]) in appt_exact:
-            return "booked"
-        ss = datetime.combine(d, datetime.strptime(row["t"], "%H:%M").time())
-        se = datetime.combine(d, datetime.strptime(row["tend"], "%H:%M").time())
-        for bs, be in cons_by.get((c, d), []):
-            if ss < be and se > bs:        # strict overlap; touching edges excluded
-                return "blocked"
-        return "open"
+    """Same rule as before (Booked > Blocked > Open; strict overlap s<be & e>bs, touching
+    edges excluded) but vectorised: one exact-match set lookup for Booked, then one
+    groupby(coach,date) + numpy overlap check per group for Blocked, instead of a Python
+    function called once per slot row. 31-Jul-2026 IST: was inst.apply(bucket, axis=1)."""
     inst = inst.copy()
-    inst["bucket"]  = inst.apply(bucket, axis=1)
-    inst["booked"]  = inst["bucket"]=="booked"
-    inst["blocked"] = inst["bucket"]=="blocked"
-    inst["open"]    = inst["bucket"]=="open"
+    ss_all = pd.to_datetime(inst["date"].astype(str) + " " + inst["t"])
+    se_all = pd.to_datetime(inst["date"].astype(str) + " " + inst["tend"])
+
+    key = list(zip(inst["coach"], inst["date"], inst["t"]))
+    booked = pd.Series([k in appt_exact for k in key], index=inst.index)
+
+    blocked = pd.Series(False, index=inst.index)
+    for (c, d), idx in inst.groupby(["coach", "date"], sort=False).groups.items():
+        intervals = cons_by.get((c, d))
+        if not intervals:
+            continue
+        ss, se = ss_all.loc[idx].to_numpy(), se_all.loc[idx].to_numpy()
+        overlap = np.zeros(len(idx), dtype=bool)
+        for bs, be in intervals:
+            overlap |= (ss < np.datetime64(be)) & (se > np.datetime64(bs))   # strict overlap; touching edges excluded
+        blocked.loc[idx] = overlap
+
+    inst["booked"]  = booked
+    inst["blocked"] = blocked & ~booked            # Booked takes priority over Blocked, same as the old short-circuit
+    inst["open"]    = ~(inst["booked"] | inst["blocked"])
+    inst["bucket"]  = np.select([inst["booked"], inst["blocked"]], ["booked", "blocked"], default="open")
     inst["blk_wd"]  = [(b and (c,d,t) in bwd_keys)
                        for b,c,d,t in zip(inst["blocked"],inst["coach"],inst["date"],inst["t"])]
     return inst
@@ -449,7 +463,7 @@ def main():
     ap.add_argument("--start", required=True, help="window start YYYY-MM-DD")
     ap.add_argument("--end", required=True, help="window end YYYY-MM-DD")
     ap.add_argument("--today", help="open/upcoming cutoff YYYY-MM-DD (default: now)")
-    ap.add_argument("--status", default="P,F,N", help="occupied statuses (default P,F,N)")
+    ap.add_argument("--status", default=DEFAULT_STATUSES, help="occupied statuses (default P,F,N)")
     ap.add_argument("--exclude-time-slot", default="", help="durations to drop, e.g. 60")
     ap.add_argument("--exclude-coach", default="", help="coach name substrings to drop, comma-separated")
     a = ap.parse_args()
