@@ -48,11 +48,12 @@ Changes:
                    groups bookings by (day booked, role) and averages the gap between
                    consecutive bookings' consumed.created_at within that bucket. Buckets with
                    <2 bookings are left blank (no gap to compute).
-
-Known issue (open):
-  chop() emits a trailing slot that can run past a rule's end_time when the window length is
-  not a multiple of time_slot (e.g. rule 16:30-17:15 @30min -> a 17:00-17:30 slot that is not
-  actually bookable). Fix: only emit a slot when start + step <= end.
+  31-Jul-2026 IST  chop() fixed: was `while t < e`, letting a trailing slot run past a rule's
+                   end_time when the window length wasn't a multiple of time_slot (e.g. rule
+                   16:30-17:15 @30min used to yield a bogus, unbookable 17:00-17:30 slot). Now
+                   `while t + step <= e` -- only emits a slot that fits entirely inside the
+                   window. Slightly lowers total/open counts for any coach with this kind of
+                   leftover remainder (confirmed case: Swetha Kshirsagar).
 
 Usage:
   python coach_availability.py --slots SLOTS.xlsx --consumed CONSUMED.xlsx --out OUT.xlsx \
@@ -89,13 +90,18 @@ def pick(df, base, which="first"):
     return m[-1] if which == "last" else m[0]
 
 def chop(start, end, step):
-    """Cut a [start,end] HH:MM(:SS) window into step-minute slots -> [(start,end), ...]."""
+    """Cut a [start,end] HH:MM(:SS) window into step-minute slots -> [(start,end), ...].
+    Only emits a slot that fits entirely inside the window (start + step <= end) --
+    31-Jul-2026 IST: was `while t < e`, which let a trailing slot run past end_time when
+    the window length wasn't an exact multiple of step (e.g. 16:30-17:15 @ 30min used to
+    yield a bogus 17:00-17:30 slot)."""
     out = []
     t = datetime(2000,1,1,*map(int, str(start).split(":")[:2]))
     e = datetime(2000,1,1,*map(int, str(end).split(":")[:2]))
-    while t < e:
-        out.append((t.strftime("%H:%M"), (t+timedelta(minutes=int(step))).strftime("%H:%M")))
-        t += timedelta(minutes=int(step))
+    step_td = timedelta(minutes=int(step))
+    while t + step_td <= e:
+        out.append((t.strftime("%H:%M"), (t+step_td).strftime("%H:%M")))
+        t += step_td
     return out
 
 
@@ -141,16 +147,21 @@ def build_slots(slots, win_start, win_end, exclude_durations, exclude_coaches):
     df["ed"] = pd.to_datetime(df["end_date"], errors="coerce")
     cid = pick(df,"health_coach_id","first"); pst = pick(df,"start_time","first"); pet = pick(df,"end_time","first")
 
-    # reserved windows are coach-level: a rule's reserved_slot_config can describe
-    # times belonging to that coach's OTHER rules, so aggregate per coach per week.
-    coach_res = {}                                              # cid -> {week -> [(start_min, end_min)]}
-    for _, r in df.iterrows():
-        rw = _reserved_windows(r)
-        if not rw:
-            continue
-        dst = coach_res.setdefault(r[cid], {})
-        for wk, wins in rw.items():
-            dst.setdefault(wk, []).extend((_min(a), _min(b)) for a, b in wins)
+    # 31-Jul-2026 IST: reserved_slot_config-driven reservation replaced by a computed rule
+    # (see below, after inst is assembled) -- last 2 slots/day reserved for weeks 1-3 of the
+    # month, last 3 for week 4. Old config-based calculation commented out, not deleted, in
+    # case this needs reverting.
+    #
+    # # reserved windows are coach-level: a rule's reserved_slot_config can describe
+    # # times belonging to that coach's OTHER rules, so aggregate per coach per week.
+    # coach_res = {}                                              # cid -> {week -> [(start_min, end_min)]}
+    # for _, r in df.iterrows():
+    #     rw = _reserved_windows(r)
+    #     if not rw:
+    #         continue
+    #     dst = coach_res.setdefault(r[cid], {})
+    #     for wk, wins in rw.items():
+    #         dst.setdefault(wk, []).extend((_min(a), _min(b)) for a, b in wins)
 
     rows = []
     for _, r in df.iterrows():
@@ -159,21 +170,29 @@ def build_slots(slots, win_start, win_end, exclude_durations, exclude_coaches):
             continue
         slots = chop(r[pst], r[pet], r["time_slot"])
         days = {WEEKDAY[d.strip()] for d in str(r["days"]).split(",") if d.strip() in WEEKDAY}
-        cres = coach_res.get(r[cid], {})
         d = lo
         while d <= hi:
             if d.weekday() in days:
-                wins = cres.get(min(4, (d.day - 1)//7 + 1), ())     # reserved windows for this week-of-month
                 for s_, e_ in slots:
-                    sm, em = _min(s_), _min(e_)
-                    reserved = any(a <= sm and em <= b for a, b in wins)   # slot fully inside a reserved window
                     rows.append((r[cid], d.date(), s_, e_,
                                  r.get("first_name",""), r.get("last_name",""), r.get("role",""),
-                                 reserved))
+                                 False))                            # reserved: placeholder, set below
             d += timedelta(days=1)
 
     inst = pd.DataFrame(rows, columns=["coach","date","t","tend","first","last","role","reserved"]) \
              .drop_duplicates(["coach","date","t"])
+
+    # 31-Jul-2026 IST: reserved = last 2 slots of each (coach, date) for weeks 1-3 of the
+    # month, last 3 for week 4 (days 22+). Week-of-month uses each slot's OWN date, so
+    # month-boundary spillover (e.g. the 7-day finder running into next month) buckets
+    # correctly on its own -- 1-Aug is week1 of August, not an extension of July's week4.
+    if len(inst):
+        inst = inst.sort_values(["coach", "date", "t"])
+        week_of_month = inst["date"].apply(lambda d: min(4, (d.day - 1)//7 + 1))
+        rank_from_end = inst.groupby(["coach", "date"], sort=False).cumcount(ascending=False)
+        n_reserved = week_of_month.map({1: 2, 2: 2, 3: 2, 4: 3})
+        inst["reserved"] = rank_from_end < n_reserved
+
     inst["name"] = (inst["first"].fillna("")+" "+inst["last"].fillna("")).str.strip()
     if exclude_coaches:
         pat = "|".join(re.escape(c) for c in exclude_coaches)
