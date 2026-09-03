@@ -38,6 +38,7 @@ ROLE_BY_ID = {
     "83196674-0ee4-11f0-a17d-000d3a3e18d5": "Other",      # Tejaswini Rao Gudati
     "fa0d6f97-a81d-11f0-a0bb-000d3a3e18d5": "Nutritionist",      # Vandna Lalchandani
     "d2c4d799-7eac-11f1-b64c-000d3a3e18d5": "Nutritionist",   #Dilpreet Kaushik
-    "ee93834d-800a-11f1-b64c-000d3a3e18d5": "Nutritionist"  #sneha pandey
+    "ee93834d-800a-11f1-b64c-000d3a3e18d5": "Nutritionist",  #sneha pandey
+    "494d54af-94a2-11f1-afae-000d3a3e18d5": "Physiotherapist" # nabil khan
 
 }
