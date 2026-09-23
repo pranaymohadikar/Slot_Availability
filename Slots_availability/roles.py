@@ -39,6 +39,8 @@ ROLE_BY_ID = {
     "fa0d6f97-a81d-11f0-a0bb-000d3a3e18d5": "Nutritionist",      # Vandna Lalchandani
     "d2c4d799-7eac-11f1-b64c-000d3a3e18d5": "Nutritionist",   #Dilpreet Kaushik
     "ee93834d-800a-11f1-b64c-000d3a3e18d5": "Nutritionist",  #sneha pandey
-    "494d54af-94a2-11f1-afae-000d3a3e18d5": "Physiotherapist" # nabil khan
+    "494d54af-94a2-11f1-afae-000d3a3e18d5": "Physiotherapist", # nabil khan
+    "076f1d3e-aaa5-11f1-afae-000d3a3e18d5": "Nutritionist", #mona raj
+    "8b58b33d-ad07-11f1-afae-000d3a3e18d5": "Psychologist" #khushboo thakkar
 
 }
