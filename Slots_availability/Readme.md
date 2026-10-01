@@ -34,7 +34,9 @@ Two inputs, one slot grid.
 
 **Availability rules** (from the availability API) describe *when a coach works*: one row per
 rule, e.g. `mon,wed,fri 09:00–13:00, 30-min slots, 2026-06-01..2026-06-30`. Rules are
-**chopped** into individual slots, one per (coach, date, start-time).
+**chopped** into individual slots, one per (coach, date, start-time). A rule can also carry a
+`buffer_time` (minutes) — dead time held between the end of one slot and the start of the next,
+so slots aren't necessarily back-to-back (see [Engine functions](#modules)).
 
 **Consumed** (from the consumed API) describes *what is taken*: appointments and blocks, one
 row each, as time intervals.
@@ -159,12 +161,18 @@ consume the 10:00–10:30 slot.
 
 ### Engine functions worth knowing
 
-- `chop(start, end, step)` — cuts a rule window into slots. Only emits a slot that fits
-  entirely inside the window (31-Jul-2026 fix — previously a trailing slot could run past
+- `chop(start, end, step, buffer=0)` — cuts a rule window into slots. Only emits a slot that
+  fits entirely inside the window (31-Jul-2026 fix — previously a trailing slot could run past
   `end_time` when the window length wasn't a multiple of `step`; see Known issues history).
+  `buffer` (01-Oct-2026, from the rule's `buffer_time`) is dead time between one slot's end and
+  the next slot's start — slots stay `step` minutes long, but the next one starts `step+buffer`
+  later, not just `step` later. `buffer=0` (missing/null `buffer_time` defaults here) reproduces
+  the old back-to-back behaviour exactly. E.g. `10:00-12:00 @ 30min, buffer=10` →
+  `(10:00,10:30), (10:40,11:10), (11:20,11:50)`.
 - `build_slots(...)` — expands rules across dates/weekdays, clips to the window, de-dupes
-  `(coach, date, slot_start)`, and flags `reserved` (see [Reserved slots](#key-concepts) —
-  this is now a computed rule, not read from the API).
+  `(coach, date, slot_start)`, reads each rule's `buffer_time` (default 0) for `chop()`, and
+  flags `reserved` (see [Reserved slots](#key-concepts) — this is now a computed rule, not read
+  from the API).
 - `load_consumed(...)` — splits consumed into exact appointment starts, interval list, and
   whole-day blocks.
 - `classify(...)` — applies the Booked > Blocked > Open priority. Vectorised (31-Jul-2026):
@@ -360,6 +368,16 @@ Stage timings print on every run (`[timing] …`, `flush=True`) — visible in V
 ---
 
 ## Known issues
+
+**`buffer_time` — new API field, now wired in (01-Oct-2026).** A schema check (fetching live
+availability and diffing its columns against an older saved snapshot) found the API now sends
+`buffer_time` (minutes) on every rule — 3,421 of 3,441 rows at 0, 19 at 15min, 1 at 10min in the
+pull that found it. This wasn't read by the engine at all until today; `chop()`/`build_slots()`
+now honour it (see [Engine functions](#modules)). If the API adds more new fields like this in
+the future, nothing currently alerts on it automatically — the only way this one was caught was
+an ad hoc fetch-and-diff against a stale local `availability.xlsx`. Also found in that same
+check: `meta_data.buffer_time`, a rarely-populated (36/3441 rows) second buffer-like field —
+deliberately **not** used; only the always-populated `buffer_time` is read.
 
 **Chop overshoot — fixed 31-Jul-2026.** `chop()` used to emit a trailing slot that could run
 past a rule's `end_time` when the window length wasn't a multiple of `time_slot` (Swetha

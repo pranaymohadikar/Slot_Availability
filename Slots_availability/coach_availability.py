@@ -89,19 +89,26 @@ def pick(df, base, which="first"):
         raise KeyError(f"'{base}' not found in {list(df.columns)}")
     return m[-1] if which == "last" else m[0]
 
-def chop(start, end, step):
+def chop(start, end, step, buffer=0):
     """Cut a [start,end] HH:MM(:SS) window into step-minute slots -> [(start,end), ...].
     Only emits a slot that fits entirely inside the window (start + step <= end) --
     31-Jul-2026 IST: was `while t < e`, which let a trailing slot run past end_time when
     the window length wasn't an exact multiple of step (e.g. 16:30-17:15 @ 30min used to
-    yield a bogus 17:00-17:30 slot)."""
+    yield a bogus 17:00-17:30 slot).
+
+    01-Oct-2026 IST: `buffer` (minutes, from the rule's `buffer_time`) is dead time held
+    between the end of one slot and the start of the next -- slots stay `step` minutes
+    long, but the next slot starts at step+buffer later, not just step later. buffer=0
+    (the default) reproduces the old back-to-back behaviour exactly. E.g. 10:00-12:00 @
+    30min step, 10min buffer -> (10:00,10:30), (10:40,11:10), (11:20,11:50)."""
     out = []
     t = datetime(2000,1,1,*map(int, str(start).split(":")[:2]))
     e = datetime(2000,1,1,*map(int, str(end).split(":")[:2]))
     step_td = timedelta(minutes=int(step))
+    advance_td = timedelta(minutes=int(step) + int(buffer))
     while t + step_td <= e:
         out.append((t.strftime("%H:%M"), (t+step_td).strftime("%H:%M")))
-        t += step_td
+        t += advance_td
     return out
 
 
@@ -168,7 +175,9 @@ def build_slots(slots, win_start, win_end, exclude_durations, exclude_coaches):
         lo, hi = max(r["sd"], win_start), min(r["ed"], win_end)     # clip rule to window
         if pd.isna(lo) or pd.isna(hi) or lo > hi:
             continue
-        slots = chop(r[pst], r[pet], r["time_slot"])
+        buf = r.get("buffer_time", 0)                     # 01-Oct-2026 IST: missing/null -> 0 (old behaviour)
+        buf = 0 if pd.isna(buf) else buf
+        slots = chop(r[pst], r[pet], r["time_slot"], buf)
         days = {WEEKDAY[d.strip()] for d in str(r["days"]).split(",") if d.strip() in WEEKDAY}
         d = lo
         while d <= hi:
